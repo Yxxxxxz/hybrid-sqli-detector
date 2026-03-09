@@ -1,3 +1,3 @@
-from .detector import SQLiDetector
+from .detector import SQLiDetector, SignatureDetector
 
-__all__ = ["HybridSQLiRF", "SignatureDetector"]
+__all__ = ["SQLiDetector", "SignatureDetector"]
