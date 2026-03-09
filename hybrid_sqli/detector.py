@@ -1,7 +1,3 @@
-# =====================================================
-# 🔥 FULL HYBRID SQLi DETECTOR (Auto-Weight + RF + Signature Block)
-# =====================================================
-
 import re
 import urllib.parse
 import numpy as np
@@ -17,84 +13,46 @@ from sklearn.ensemble import RandomForestClassifier
 
 from sklearn.metrics import (
     confusion_matrix,
-    precision_recall_curve,
+    accuracy_score,
+    precision_score,
+    recall_score,
     f1_score,
-    roc_auc_score
+    classification_report
 )
 
 # =====================================================
-# 🔐 ADVANCED SQLi SIGNATURE DETECTOR
+# Stage 2 : Signature Detector (Regex Only)
 # =====================================================
 
 class SignatureDetector:
 
-    PATTERNS = {
+    REGEX_PATTERNS = {
 
-        # ------------------------------------------------
-        # 1️⃣ Authentication Bypass
-        # ------------------------------------------------
-        'auth_bypass': r"\b(or|and)\b\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?",
+        "union_based": r"\bunion\s+(all\s+)?select\b",
 
-        # ------------------------------------------------
-        # 2️⃣ UNION Based SQLi
-        # ------------------------------------------------
-        'union_based': r"\bunion\b\s+(all\s+)?\bselect\b",
+        "error_based": r"\b(updatexml|extractvalue|floor\(|geometrycollection|multipoint|exp\(|rand\()", 
 
-        # ------------------------------------------------
-        # 3️⃣ Stacked Queries
-        # ------------------------------------------------
-        'stacked_queries': r";\s*(drop|delete|insert|update|truncate|alter|create)",
+        "time_based": r"\b(sleep|benchmark|waitfor\s+delay|pg_sleep|dbms_lock\.sleep)\b",
 
-        # ------------------------------------------------
-        # 4️⃣ Time Based Blind SQLi
-        # ------------------------------------------------
-        'time_based': r"\b(sleep|benchmark|waitfor\s+delay|pg_sleep|dbms_lock\.sleep)\b",
-
-        # ------------------------------------------------
-        # 5️⃣ Error Based SQLi
-        # ------------------------------------------------
-        'error_based': r"\b(updatexml|extractvalue|floor\(|geometrycollection|multipoint|exp\(|rand\()", 
-
-        # ------------------------------------------------
-        # 6️⃣ Information Extraction
-        # ------------------------------------------------
-        'schema_enum': r"\b(information_schema|table_name|column_name|database\(\)|version\(\))\b",
-
-        # ------------------------------------------------
-        # 7️⃣ Boolean Blind SQLi
-        # ------------------------------------------------
-        'boolean_blind': r"\b(and|or)\b\s+\d+\s*=\s*\d+",
-
-        # ------------------------------------------------
-        # 8️⃣ Comment Bypass
-        # ------------------------------------------------
-        'comment_bypass': r"(--|#|/\*|\*/)",
-
-        # ------------------------------------------------
-        # 9️⃣ Encoding Bypass
-        # ------------------------------------------------
-        'encoding_bypass': r"(%27|%23|%2d%2d|0x[0-9a-f]+|\\x[0-9a-f]+)",
-
-        # ------------------------------------------------
-        # 🔟 SQL Functions often used in SQLi
-        # ------------------------------------------------
-        'sqli_functions': r"\b(concat|load_file|substring|ascii|char|hex)\s*\(",
+        "boolean_based": r"\b(and|or)\b\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?"
     }
 
-    def detect(self, text: str) -> int:
-        score = 0
+    def detect(self, text):
 
-        for pattern in self.PATTERNS.values():
+        for name, pattern in self.REGEX_PATTERNS.items():
+
             if re.search(pattern, text):
-                score += 10
 
-        return min(score, 100)
+                return True, name
+
+        return False, None
+
 
 # =====================================================
-# 🤖 HYBRID SQLi RF DETECTOR
+# Hybrid SQLi Detector
 # =====================================================
 
-class HybridSQLiRF:
+class SQLiDetector:
 
     def __init__(self):
 
@@ -106,32 +64,15 @@ class HybridSQLiRF:
 
         self.max_decode = 5
 
-        self.best_threshold = 50
+    # =================================================
+    # Stage 1 : Normalization
+    # =================================================
 
-        # auto tuned weights
-        self.w_ml = 0.6
-        self.w_sig = 0.4
-
-    # -----------------------------
-    # Dataset Cleaning
-    # -----------------------------
-    def clean_dataset(self, df):
-
-        df = df.dropna(subset=['payload']).drop_duplicates()
-        df = df[df['payload'].str.strip() != ""]
-        df = df[df['payload'].str.len() >= 7]
-        df = df[~df['payload'].str.match(r'^\d+$')]
-
-        return df
-
-    # -----------------------------
-    # Recursive Decode
-    # -----------------------------
     def recursive_decode(self, text):
 
         count = 0
 
-        while '%' in text and count < self.max_decode:
+        while "%" in text and count < self.max_decode:
 
             new = urllib.parse.unquote(text)
 
@@ -141,14 +82,9 @@ class HybridSQLiRF:
             text = new
             count += 1
 
-        if count >= self.max_decode:
-            return None
-
         return text
 
-    # -----------------------------
-    # Remove Comments
-    # -----------------------------
+
     def remove_comments(self, text):
 
         text = re.sub(r'(--|#).*?(\n|$)', ' ', text)
@@ -156,31 +92,45 @@ class HybridSQLiRF:
 
         return text
 
-    # -----------------------------
-    # Skeletonization
-    # -----------------------------
+
+    def normalize(self, text):
+
+        text = self.recursive_decode(text)
+
+        text = text.lower()
+
+        text = self.remove_comments(text)
+
+        text = re.sub(r'\s+', ' ', text)
+
+        return text
+
+
+    # =================================================
+    # Stage 3 : ML Preprocessing
+    # =================================================
+
     def skeletonize(self, text):
 
         text = re.sub(r'0x[0-9a-f]+', ' CONST_HEX ', text)
+
         text = re.sub(r"'[^']*'", ' CONST_STR ', text)
         text = re.sub(r'"[^"]*"', ' CONST_STR ', text)
+
         text = re.sub(r'\b(true|false|null)\b', ' CONST_BOOL ', text)
+
         text = re.sub(r'\b\d+(\.\d+)?\b', ' CONST_NUM ', text)
 
         return text
 
-    # -----------------------------
-    # Tokenization
-    # -----------------------------
+
     def tokenize(self, text):
 
         tokens = re.findall(r"[a-zA-Z_]+|CONST_[A-Z_]+", text)
 
         return " ".join(tokens)
 
-    # -----------------------------
-    # Statistical Features
-    # -----------------------------
+
     def extract_stat_features(self, text):
 
         return np.array([
@@ -194,66 +144,78 @@ class HybridSQLiRF:
             text.count(" and ")
         ])
 
-    # -----------------------------
+
+    # =================================================
     # Transform
-    # -----------------------------
+    # =================================================
+
     def transform(self, text):
 
-        text = self.recursive_decode(text)
+        normalized = self.normalize(text)
 
-        if text is None:
-            return None
+        skeleton = self.skeletonize(normalized)
 
-        text = text.lower()
-        text = self.remove_comments(text)
+        tokens = self.tokenize(skeleton)
 
-        text = re.sub(r'\s+', ' ', text)
+        stat = self.extract_stat_features(skeleton)
 
-        sig_score = self.signature_detector.detect(text)
+        return tokens, stat
 
-        text = self.skeletonize(text)
 
-        tokenized = self.tokenize(text)
+    # =================================================
+    # Dataset Cleaning
+    # =================================================
 
-        stat = self.extract_stat_features(text)
+    def clean_dataset(self, df):
 
-        return tokenized, sig_score, stat
+        df = df.dropna(subset=['payload'])
 
-    # -----------------------------
+        df = df.drop_duplicates()
+
+        df = df[df['payload'].str.strip() != ""]
+
+        df = df[df['payload'].str.len() >= 7]
+
+        df = df[~df['payload'].str.match(r'^\d+$')]
+
+        return df
+
+
+    # =================================================
     # Train
-    # -----------------------------
+    # =================================================
+
     def train(self, df):
 
         df = self.clean_dataset(df)
 
         processed = df['payload'].apply(self.transform)
 
-        processed = processed.dropna()
-
-        df = df.loc[processed.index]
-
         df['tokens'] = processed.apply(lambda x: x[0])
-        df['sig_score'] = processed.apply(lambda x: x[1])
-        df['stat'] = processed.apply(lambda x: x[2])
+        df['stat'] = processed.apply(lambda x: x[1])
 
         X_text = df['tokens']
+
         y = df['label'].values
+
 
         self.vectorizer = TfidfVectorizer(
             max_features=5000,
             ngram_range=(1,3)
         )
 
+
         X_tfidf = self.vectorizer.fit_transform(X_text)
 
-        X_sig = csr_matrix(df['sig_score'].values.reshape(-1,1))
         X_stat = csr_matrix(np.vstack(df['stat'].values))
 
-        X_full = hstack([X_tfidf, X_sig, X_stat])
+        X_full = hstack([X_tfidf, X_stat])
+
 
         self.scaler = StandardScaler(with_mean=False)
 
         X_scaled = self.scaler.fit_transform(X_full)
+
 
         X_train, X_test, y_train, y_test = train_test_split(
             X_scaled,
@@ -263,6 +225,7 @@ class HybridSQLiRF:
             random_state=42
         )
 
+
         self.model = RandomForestClassifier(
             n_estimators=300,
             class_weight='balanced',
@@ -270,135 +233,116 @@ class HybridSQLiRF:
             random_state=42
         )
 
+
         self.model.fit(X_train, y_train)
 
         self.evaluate(X_test, y_test)
 
-    # -----------------------------
-    # Evaluation + Auto Weight
-    # -----------------------------
+
+    # =================================================
+    # Evaluation
+    # =================================================
+
     def evaluate(self, X_test, y_test):
 
-        test_probs = self.model.predict_proba(X_test)[:,1]
+        preds = self.model.predict(X_test)
 
-        sig_feature_test = X_test[:, -9].toarray().flatten()
+        cm = confusion_matrix(y_test, preds)
 
-        best_f1 = 0
-        best_w_ml = 0.6
-        best_w_sig = 0.4
-        best_t = 50
+        accuracy = accuracy_score(y_test, preds)
 
-        # auto weight search
-        for w_ml in np.arange(0.1,1.0,0.1):
+        precision = precision_score(y_test, preds)
 
-            w_sig = 1 - w_ml
+        recall = recall_score(y_test, preds)
 
-            final_scores = (w_ml * test_probs * 100) + (w_sig * sig_feature_test)
+        f1 = f1_score(y_test, preds)
 
-            precision, recall, thresholds = precision_recall_curve(
-                y_test,
-                final_scores
-            )
 
-            for t in thresholds:
-
-                preds = (final_scores >= t).astype(int)
-
-                f1 = f1_score(y_test, preds)
-
-                if f1 > best_f1:
-
-                    best_f1 = f1
-                    best_w_ml = w_ml
-                    best_w_sig = w_sig
-                    best_t = t
-
-        self.w_ml = best_w_ml
-        self.w_sig = best_w_sig
-        self.best_threshold = best_t
-
-        final_scores = (self.w_ml * test_probs * 100) + (self.w_sig * sig_feature_test)
-
-        preds = (final_scores >= self.best_threshold).astype(int)
+        print("\n==============================")
+        print("MODEL PERFORMANCE SUMMARY")
+        print("==============================")
 
         print("\nConfusion Matrix")
-        print(confusion_matrix(y_test, preds))
+        print(cm)
 
-        print("ROC-AUC:", roc_auc_score(y_test, final_scores))
+        print("\nAccuracy:", accuracy)
+        print("Precision:", precision)
+        print("Recall:", recall)
+        print("F1-score:", f1)
 
-        print("\nBest ML Weight:", self.w_ml)
-        print("Best Signature Weight:", self.w_sig)
-        print("Best Threshold:", self.best_threshold)
-        print("Best F1:", best_f1)
+        print("\nDetailed Report")
+        print(classification_report(y_test, preds))
 
-    # -----------------------------
-    # Predict
-    # -----------------------------
+
+    # =================================================
+    # Prediction
+    # =================================================
+
     def predict_single(self, payload):
 
-        result = self.transform(payload)
+        normalized = self.normalize(payload)
 
-        if result is None:
-            return {"prediction":"MALICIOUS","reason":"Excessive Encoding"}
+        # Stage 2: Regex Signature
+        sig_detected, sig_type = self.signature_detector.detect(normalized)
 
-        tokenized, sig_score, stat = result
-
-        # HARD BLOCK
-        if sig_score >= 80:
+        if sig_detected:
 
             return {
-                "prediction":"MALICIOUS",
-                "reason":"High confidence SQLi signature",
-                "signature_score":sig_score
+
+                "prediction": "MALICIOUS",
+                "stage": "Regex Signature",
+                "reason": sig_type,
+                "payload": normalized
+
             }
 
-        X_tfidf = self.vectorizer.transform([tokenized])
 
-        X_sig = csr_matrix([[sig_score]])
+        # Stage 3: ML Detection
+
+        tokens, stat = self.transform(payload)
+
+        X_tfidf = self.vectorizer.transform([tokens])
 
         X_stat = csr_matrix([stat])
 
-        X_full = hstack([X_tfidf,X_sig,X_stat])
+        X_full = hstack([X_tfidf, X_stat])
 
         X_scaled = self.scaler.transform(X_full)
 
         prob = self.model.predict_proba(X_scaled)[0][1]
 
-        final_score = (self.w_ml * prob * 100) + (self.w_sig * sig_score)
+        prediction = "MALICIOUS" if prob >= 0.5 else "BENIGN"
 
-        prediction = "MALICIOUS" if final_score >= self.best_threshold else "BENIGN"
 
         return {
-            "prediction":prediction,
-            "ml_probability":prob,
-            "signature_score":sig_score,
-            "final_score":final_score
+
+            "prediction": prediction,
+            "stage": "ML Detection",
+            "ml_probability": prob,
+            "payload": normalized
+
         }
 
-    # -----------------------------
-    # Save Model
-    # -----------------------------
-    def save_model(self,path="hybrid_sqli_model.pkl"):
+
+    # =================================================
+    # Save / Load
+    # =================================================
+
+    def save_model(self, path="sqli_detector.pkl"):
 
         joblib.dump({
-            "model":self.model,
-            "vectorizer":self.vectorizer,
-            "scaler":self.scaler,
-            "threshold":self.best_threshold,
-            "w_ml":self.w_ml,
-            "w_sig":self.w_sig
-        },path)
 
-    # -----------------------------
-    # Load Model
-    # -----------------------------
-    def load_model(self,path="hybrid_sqli_model.pkl"):
+            "model": self.model,
+            "vectorizer": self.vectorizer,
+            "scaler": self.scaler
+
+        }, path)
+
+
+    def load_model(self, path="sqli_detector.pkl"):
 
         data = joblib.load(path)
 
         self.model = data["model"]
         self.vectorizer = data["vectorizer"]
         self.scaler = data["scaler"]
-        self.best_threshold = data["threshold"]
-        self.w_ml = data["w_ml"]
-        self.w_sig = data["w_sig"]
