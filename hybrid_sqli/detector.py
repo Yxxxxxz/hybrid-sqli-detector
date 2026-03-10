@@ -1,3 +1,9 @@
+# =====================================================
+# SQLi Detector
+# Signature First → ML Detection
+# Improved Version
+# =====================================================
+
 import re
 import urllib.parse
 import numpy as np
@@ -21,20 +27,21 @@ from sklearn.metrics import (
 )
 
 # =====================================================
-# Stage 2 : Signature Detector (Regex Only)
+# Stage 2 : Signature Detector
 # =====================================================
 
 class SignatureDetector:
 
     REGEX_PATTERNS = {
 
-        "union_based": r"\bunion\s+(all\s+)?select\b",
+        "union_based": r"\bunion\s+(all\s+)?select\b.*(--|#|/\*)",
 
-        "error_based": r"\b(updatexml|extractvalue|floor\(|geometrycollection|multipoint|exp\(|rand\()", 
+        "error_based": r"\b(updatexml|extractvalue|floor\(|geometrycollection|multipoint|exp\(|rand\()",        
 
         "time_based": r"\b(sleep|benchmark|waitfor\s+delay|pg_sleep|dbms_lock\.sleep)\b",
 
-        "boolean_based": r"\b(and|or)\b\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?"
+        # ปรับ boolean rule ให้ตรวจเฉพาะ classic SQLi
+        "boolean_based": r"\b(or|and)\b\s+(1=1|'1'='1'|\"1\"=\"1\")"
     }
 
     def detect(self, text):
@@ -112,7 +119,9 @@ class SQLiDetector:
 
     def skeletonize(self, text):
 
-        text = re.sub(r'0x[0-9a-f]+', ' CONST_HEX ', text)
+        text = text.lower()
+
+        text = re.sub(r'0x[0-9a-fA-F]+', ' CONST_HEX ', text)
 
         text = re.sub(r"'[^']*'", ' CONST_STR ', text)
         text = re.sub(r'"[^"]*"', ' CONST_STR ', text)
@@ -120,6 +129,8 @@ class SQLiDetector:
         text = re.sub(r'\b(true|false|null)\b', ' CONST_BOOL ', text)
 
         text = re.sub(r'\b\d+(\.\d+)?\b', ' CONST_NUM ', text)
+
+        text = re.sub(r'\s+', ' ', text).strip()
 
         return text
 
@@ -131,17 +142,29 @@ class SQLiDetector:
         return " ".join(tokens)
 
 
+    # =================================================
+    # Feature Extraction
+    # =================================================
+
     def extract_stat_features(self, text):
 
+        length = len(text)
+
+        digit_ratio = sum(c.isdigit() for c in text) / max(length,1)
+
+        symbol_ratio = sum(not c.isalnum() for c in text) / max(length,1)
+
         return np.array([
-            len(text),
+            length,
             text.count("'"),
             text.count(";"),
             text.count("="),
             text.count("--"),
             text.count("/*"),
             text.count(" or "),
-            text.count(" and ")
+            text.count(" and "),
+            digit_ratio,
+            symbol_ratio
         ])
 
 
@@ -174,9 +197,7 @@ class SQLiDetector:
 
         df = df[df['payload'].str.strip() != ""]
 
-        df = df[df['payload'].str.len() >= 7]
-
-        df = df[~df['payload'].str.match(r'^\d+$')]
+        df = df[df['payload'].str.len() >= 3]
 
         return df
 
@@ -282,7 +303,23 @@ class SQLiDetector:
 
         normalized = self.normalize(payload)
 
-        # Stage 2: Regex Signature
+        # ---------------------------
+        # Numeric Whitelist
+        # ---------------------------
+
+        if re.fullmatch(r'\d+', normalized.strip()):
+
+            return {
+                "prediction": "BENIGN",
+                "stage": "Numeric Whitelist",
+                "payload": normalized
+            }
+
+
+        # ---------------------------
+        # Signature Detection
+        # ---------------------------
+
         sig_detected, sig_type = self.signature_detector.detect(normalized)
 
         if sig_detected:
@@ -297,7 +334,9 @@ class SQLiDetector:
             }
 
 
-        # Stage 3: ML Detection
+        # ---------------------------
+        # ML Detection
+        # ---------------------------
 
         tokens, stat = self.transform(payload)
 
@@ -311,7 +350,7 @@ class SQLiDetector:
 
         prob = self.model.predict_proba(X_scaled)[0][1]
 
-        prediction = "MALICIOUS" if prob >= 0.5 else "BENIGN"
+        prediction = "MALICIOUS" if prob >= 0.7 else "BENIGN"
 
 
         return {
